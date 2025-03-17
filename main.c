@@ -5,22 +5,18 @@
 
 static void subroutine(void) {
    printf("subroutine called\n");
-   sleep(1);
 }
 
 int main(void) {
    printf("pid: %d\n", getpid());
 
-   void *base = ps_get_base_addr();
-   printf("base addr: %p\n", base);
-
    struct ps_gadget_ctx ctx = {0};
-   ps_gadget_build_chain(&ctx, 0, base);
-
-   //ps_setup();
+   uintptr_t libc_base, libc_size;
+   ps_gadget_init(&libc_base, &libc_size);
+   ps_gadget_scan(libc_base, libc_size, &ctx);
 
    while (1) {
-      subroutine();           // call subroutine
-      ps_sleep(4 * 1000);     // sleep for 4 seconds
+      subroutine();                                            // do work
+      ps_gadget_build_chain(&ctx, 0, ps_get_base_addr(), 2);   // sleep
    }
 }

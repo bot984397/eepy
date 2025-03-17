@@ -164,6 +164,7 @@ int ps_gadget_scan(uintptr_t libc_base, uintptr_t libc_size,
       return 0;
    }
 
+   /*
    __push((uintptr_t)syscall);
    __push((uintptr_t)59);
    __push((uintptr_t)pop_rax);
@@ -177,6 +178,10 @@ int ps_gadget_scan(uintptr_t libc_base, uintptr_t libc_size,
    __push((uintptr_t)pop_rdi);
 
    __ret();
+   */
+
+   gadget_ctx->pop_rsi = (uintptr_t)pop_rsi;
+   gadget_ctx->pop_rdi = (uintptr_t)pop_rdi;
 
    return 1;
 }
@@ -204,7 +209,6 @@ struct ps_mem_range *ps_gadget_get_ranges(int prot_all, void *image_base,
       num_seg++;
    }
    ranges = malloc(sizeof(struct ps_mem_range) * num_seg);
-   printf("num ranges: %d\n", num_seg);
 
    for (int i = 0; i < ehdr->e_phnum; i++) {
       ElfW(Phdr) *seg = &phdr[i];
@@ -241,8 +245,8 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
                                                           &num_ranges);
 
    struct timespec *timespec_addr = malloc(sizeof(struct timespec));
-   timespec_addr->tv_sec = 0;
-   timespec_addr->tv_nsec = duration * 1000;
+   timespec_addr->tv_sec = duration;
+   timespec_addr->tv_nsec = 0;
 
    void *ret_addr = &&ps_chain_ret;
    __push((uintptr_t)ret_addr);         // final return address
