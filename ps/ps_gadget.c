@@ -76,6 +76,7 @@ int ps_gadget_init(uintptr_t *libc_base, uintptr_t *libc_size) {
       }
    }
 
+   fclose(maps);
    if (!l_start || !l_size) {
       return 0;
    }
@@ -210,6 +211,32 @@ struct ps_mem_range *ps_gadget_get_ranges(int prot_all, void *image_base,
    return ranges;
 }
 
+static void ps_get_heap_range(struct ps_mem_range *heap_range) {
+   if (!heap_range) {
+      return;
+   }
+
+   FILE *maps = fopen("/proc/self/maps", "r");
+   uintptr_t l_start = 0, l_size = 0;
+   char line[256];
+
+   while (fgets(line, sizeof(line), maps)) {
+      if (strstr(line, "[heap]")) {
+         uintptr_t start, end;
+         if (sscanf(line, "%lx-%lx", &start, &end) == 2) {
+            l_start = start;
+            l_size = end - start;
+         }
+      }
+   }
+
+   if (!l_start || !l_size) {
+      return;
+   }
+   heap_range->start = (void*)l_start;
+   heap_range->size = l_size;
+}
+
 void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
                            void *image_base, uint32_t duration) {
    if (!ctx) {
@@ -220,23 +247,35 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
    struct ps_mem_range *mem_ranges = ps_gadget_get_ranges(prot_all, 
                                                           image_base,
                                                           &num_ranges);
-
-   struct timespec *timespec_addr = malloc(sizeof(struct timespec));
-   timespec_addr->tv_sec = duration;
-   timespec_addr->tv_nsec = 0;
+   struct ps_mem_range heap_range = {0};
+   ps_get_heap_range(&heap_range);
 
    unsigned char xor_func[] = {
       0x48, 0x85, 0xf6, 0x74, 0x11, 0x48, 0x89, 0xf8,
       0x48, 0x89, 0xf1, 0x41, 0x88, 0xd0, 0x44, 0x30, 0x00, 0x48, 0xff, 0xc0,
       0xe2, 0xf8, 0xc3
    };
-   void *xor_map = mmap(NULL, sizeof(xor_func), 
-                        PROT_READ | PROT_WRITE | PROT_EXEC,
-                        MAP_ANON | MAP_PRIVATE, -1, 0);
-   memcpy(xor_map, xor_func, sizeof(xor_func));
 
-   void (*xor_enc_fn)(uint8_t*, size_t, uint8_t) = (void (*)(uint8_t*, size_t, uint8_t))xor_map;
+   size_t func_size = sizeof(xor_func);
+   size_t timespec_offset = (func_size + 0xF) & ~0xF; 
+   size_t mmap_size = timespec_offset + sizeof(struct timespec);
 
+   void *mmap_segment = mmap(NULL, mmap_size,
+                             PROT_READ | PROT_WRITE | PROT_EXEC,
+                             MAP_ANON | MAP_PRIVATE, -1, 0);
+   memcpy(mmap_segment, xor_func, func_size);
+
+   struct timespec *timespec_addr = 
+      (struct timespec *)((char *)mmap_segment + timespec_offset);
+   timespec_addr->tv_sec = duration;
+   timespec_addr->tv_nsec = 0;
+
+   void (*xor_enc_fn)(uint8_t*, size_t, uint8_t) = 
+      (void (*)(uint8_t*, size_t, uint8_t))mmap_segment;
+
+   /* randomized xor key */
+   srand(time(NULL));
+   int xor_key = rand() % 256;
 
    void *ret_addr = &&ps_chain_ret;
    __push((uintptr_t)ret_addr);         // final return address
@@ -260,7 +299,16 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
    // ^
    // ^
 
-   /* TODO: HEAP DECRYPTION */
+   /* decrypt heap */
+   __push((uintptr_t)xor_enc_fn);
+   __push((uintptr_t)0);
+   __push((uintptr_t)0);
+   __push((uintptr_t)xor_key);
+   __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
+   __push((uintptr_t)heap_range.size);
+   __push((uintptr_t)ctx->pop_rsi);
+   __push((uintptr_t)heap_range.start);
+   __push((uintptr_t)ctx->pop_rdi);
 
    // ^
    // ^
@@ -270,7 +318,7 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
       __push((uintptr_t)xor_enc_fn);
       __push((uintptr_t)0);
       __push((uintptr_t)0);
-      __push((uintptr_t)0xFA);
+      __push((uintptr_t)xor_key);
       __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
       __push((uintptr_t)mem_ranges[i].size);
       __push((uintptr_t)ctx->pop_rsi);
@@ -296,7 +344,7 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
       __push((uintptr_t)xor_enc_fn);
       __push((uintptr_t)0);
       __push((uintptr_t)0);
-      __push((uintptr_t)0xFA);
+      __push((uintptr_t)xor_key);
       __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
       __push((uintptr_t)mem_ranges[i].size);
       __push((uintptr_t)ctx->pop_rsi);
@@ -307,7 +355,16 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
    // ^
    // ^
 
-   /* TODO: HEAP ENCRYPTION */
+   /* encrypt heap */
+   __push((uintptr_t)xor_enc_fn);
+   __push((uintptr_t)0);
+   __push((uintptr_t)0);
+   __push((uintptr_t)xor_key);
+   __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
+   __push((uintptr_t)heap_range.size);
+   __push((uintptr_t)ctx->pop_rsi);
+   __push((uintptr_t)heap_range.start);
+   __push((uintptr_t)ctx->pop_rdi);
 
    // ^
    // ^
@@ -332,7 +389,6 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
    __ret();
 
 ps_chain_ret:
-   free(timespec_addr);
-   munmap(xor_map, sizeof(xor_func));
+   munmap(mmap_segment, sizeof(xor_func));
    return;
 }
