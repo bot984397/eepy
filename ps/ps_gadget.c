@@ -120,25 +120,21 @@ int ps_gadget_scan(uintptr_t libc_base, uintptr_t libc_size,
              start[i - 1] == 0x5B &&
              start[i - 2] == 0x59 &&
              start[i - 3] == 0x5A) {
-            printf("pop rdx; pop rcx; pop rbx; ret found at: %p\n", &start[i]);
             pop_rdx_rcx_rbx = &start[i - 3];
          }
          /* pop rdi; ret */
          if (i >= 1 && pop_rdi == NULL &&
              start[i - 1] == 0x5F) {
-            printf("pop rdi; ret found at: %p\n", &start[i]);
             pop_rdi = &start[i - 1];
          }
          /* pop rsi; ret */
          if (i >= 1 && pop_rsi == NULL &&
              start[i - 1] == 0x5E) {
-            printf("pop rdi; ret found at: %p\n", &start[i]);
             pop_rsi = &start[i - 1];
          }
          /* pop rax; ret */
          if (i >= 1 && pop_rax == NULL &&
              start[i - 1] == 0x58) {
-            printf("pop rax; ret found at: %p\n", &start[i]);
             pop_rax = &start[i - 1];
          }
       }
@@ -146,14 +142,12 @@ int ps_gadget_scan(uintptr_t libc_base, uintptr_t libc_size,
       if (i >= 1 && jmp_rax == NULL &&
           start[i - 0] == 0xE0 &&
           start[i - 1] == 0xFF) {
-         printf("jmp rax found at: %p\n", &start[i]);
          jmp_rax = &start[i - 1];
       }
       /* syscall */
       if (i >= 1 && syscall == NULL &&
           start[i - 0] == 0x05 &&
           start[i - 1] == 0x0F) {
-         printf("syscall found at: %p\n", &start[i]);
          syscall = &start[i - 1];
       }
    }
@@ -163,22 +157,6 @@ int ps_gadget_scan(uintptr_t libc_base, uintptr_t libc_size,
       printf("one or more gadgets are missing\n");
       return 0;
    }
-
-   /*
-   __push((uintptr_t)syscall);
-   __push((uintptr_t)59);
-   __push((uintptr_t)pop_rax);
-   __push((uintptr_t)0);
-   __push((uintptr_t)0);
-   __push((uintptr_t)0);
-   __push((uintptr_t)pop_rdx_rcx_rbx);
-   __push((uintptr_t)0);
-   __push((uintptr_t)pop_rsi);
-   __push((uintptr_t)"/bin/sh");
-   __push((uintptr_t)pop_rdi);
-
-   __ret();
-   */
 
    gadget_ctx->pop_rsi = (uintptr_t)pop_rsi;
    gadget_ctx->pop_rdi = (uintptr_t)pop_rdi;
@@ -217,12 +195,6 @@ struct ps_mem_range *ps_gadget_get_ranges(int prot_all, void *image_base,
          continue;
       }
 
-      /*
-      uintptr_t start = (uintptr_t)image_base 
-                      + (seg->p_vaddr & ~(getpagesize() - 1));
-      size_t size = (seg->p_memsz + getpagesize() - 1) & ~(getpagesize() - 1);
-      */
-
       int prot = 0;
       if (seg->p_flags & PF_R) prot |= PROT_READ;
       if (seg->p_flags & PF_W) prot |= PROT_WRITE;
@@ -253,6 +225,19 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
    timespec_addr->tv_sec = duration;
    timespec_addr->tv_nsec = 0;
 
+   unsigned char xor_func[] = {
+      0x48, 0x85, 0xf6, 0x74, 0x11, 0x48, 0x89, 0xf8,
+      0x48, 0x89, 0xf1, 0x41, 0x88, 0xd0, 0x44, 0x30, 0x00, 0x48, 0xff, 0xc0,
+      0xe2, 0xf8, 0xc3
+   };
+   void *xor_map = mmap(NULL, sizeof(xor_func), 
+                        PROT_READ | PROT_WRITE | PROT_EXEC,
+                        MAP_ANON | MAP_PRIVATE, -1, 0);
+   memcpy(xor_map, xor_func, sizeof(xor_func));
+
+   void (*xor_enc_fn)(uint8_t*, size_t, uint8_t) = (void (*)(uint8_t*, size_t, uint8_t))xor_map;
+
+
    void *ret_addr = &&ps_chain_ret;
    __push((uintptr_t)ret_addr);         // final return address
 
@@ -261,28 +246,36 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
 
    /* mprotect regions back to original protection */
    for (int i = 0; i < num_ranges; i++) {
-      /* only target regions that were changed in step 1 */
-      if ((mem_ranges[i].prot & (PROT_READ | PROT_WRITE)) != 
-         (PROT_READ | PROT_WRITE)) {
-         __push((uintptr_t)mprotect);
-         __push((uintptr_t)0);
-         __push((uintptr_t)0);
-         __push((uintptr_t)mem_ranges[i].prot);
-         __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
-         __push((uintptr_t)mem_ranges[i].size);
-         __push((uintptr_t)ctx->pop_rsi);
-         __push((uintptr_t)mem_ranges[i].start);
-         __push((uintptr_t)ctx->pop_rdi);
-      }
- 
+      __push((uintptr_t)mprotect);
+      __push((uintptr_t)0);
+      __push((uintptr_t)0);
+      __push((uintptr_t)mem_ranges[i].prot);
+      __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
+      __push((uintptr_t)mem_ranges[i].size);
+      __push((uintptr_t)ctx->pop_rsi);
+      __push((uintptr_t)mem_ranges[i].start);
+      __push((uintptr_t)ctx->pop_rdi);
    }
+
+   // ^
+   // ^
+
+   /* TODO: HEAP DECRYPTION */
 
    // ^
    // ^
 
    /* decrypt regions */
    for (int i = 0; i < num_ranges; i++) {
-
+      __push((uintptr_t)xor_enc_fn);
+      __push((uintptr_t)0);
+      __push((uintptr_t)0);
+      __push((uintptr_t)0xFA);
+      __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
+      __push((uintptr_t)mem_ranges[i].size);
+      __push((uintptr_t)ctx->pop_rsi);
+      __push((uintptr_t)mem_ranges[i].start);
+      __push((uintptr_t)ctx->pop_rdi);
    }
 
    // ^
@@ -300,26 +293,36 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
 
    /* encrypt regions */
    for (int i = 0; i < num_ranges; i++) {
-
+      __push((uintptr_t)xor_enc_fn);
+      __push((uintptr_t)0);
+      __push((uintptr_t)0);
+      __push((uintptr_t)0xFA);
+      __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
+      __push((uintptr_t)mem_ranges[i].size);
+      __push((uintptr_t)ctx->pop_rsi);
+      __push((uintptr_t)mem_ranges[i].start);
+      __push((uintptr_t)ctx->pop_rdi);
    }
+
+   // ^
+   // ^
+
+   /* TODO: HEAP ENCRYPTION */
 
    // ^
    // ^
 
    /* mprotect regions to rw if necessary */
    for (int i = 0; i < num_ranges; i++) {
-      if ((mem_ranges[i].prot & (PROT_READ | PROT_WRITE)) != 
-         (PROT_READ | PROT_WRITE)) {
-         __push((uintptr_t)mprotect);
-         __push((uintptr_t)0);
-         __push((uintptr_t)0);
-         __push((uintptr_t)(PROT_READ | PROT_WRITE));
-         __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
-         __push((uintptr_t)mem_ranges[i].size);
-         __push((uintptr_t)ctx->pop_rsi);
-         __push((uintptr_t)mem_ranges[i].start);
-         __push((uintptr_t)ctx->pop_rdi);
-      }
+      __push((uintptr_t)mprotect);
+      __push((uintptr_t)0);
+      __push((uintptr_t)0);
+      __push((uintptr_t)(PROT_READ | PROT_WRITE));
+      __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
+      __push((uintptr_t)mem_ranges[i].size);
+      __push((uintptr_t)ctx->pop_rsi);
+      __push((uintptr_t)mem_ranges[i].start);
+      __push((uintptr_t)ctx->pop_rdi);
    }
 
    // ^
@@ -329,5 +332,7 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
    __ret();
 
 ps_chain_ret:
+   free(timespec_addr);
+   munmap(xor_map, sizeof(xor_func));
    return;
 }
