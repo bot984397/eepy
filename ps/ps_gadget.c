@@ -19,6 +19,24 @@
 #define ElfW(type) Elf32_##type
 #endif
 
+#define ROP_CALL_2(_rop_ctx, val1, val2, fn_ptr) \
+   __push((uintptr_t)fn_ptr); \
+   __push((uintptr_t)val2); \
+   __push((uintptr_t)_rop_ctx->pop_rsi); \
+   __push((uintptr_t)val1); \
+   __push((uintptr_t)_rop_ctx->pop_rdi)
+
+#define ROP_CALL_3(_rop_ctx, val1, val2, val3, fn_ptr) \
+   __push((uintptr_t)fn_ptr); \
+   __push((uintptr_t)0); \
+   __push((uintptr_t)0); \
+   __push((uintptr_t)val3); \
+   __push((uintptr_t)_rop_ctx->pop_rdx_rcx_rbx); \
+   __push((uintptr_t)val2); \
+   __push((uintptr_t)_rop_ctx->pop_rsi); \
+   __push((uintptr_t)val1); \
+   __push((uintptr_t)_rop_ctx->pop_rdi)
+
 /* @brief   pushes a value onto the stack
  * @param   val: value to push
  * @retval  none
@@ -280,110 +298,38 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
    void *ret_addr = &&ps_chain_ret;
    __push((uintptr_t)ret_addr);         // final return address
 
-   // ^
-   // ^
-
    /* mprotect regions back to original protection */
    for (int i = 0; i < num_ranges; i++) {
-      __push((uintptr_t)mprotect);
-      __push((uintptr_t)0);
-      __push((uintptr_t)0);
-      __push((uintptr_t)mem_ranges[i].prot);
-      __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
-      __push((uintptr_t)mem_ranges[i].size);
-      __push((uintptr_t)ctx->pop_rsi);
-      __push((uintptr_t)mem_ranges[i].start);
-      __push((uintptr_t)ctx->pop_rdi);
+      ROP_CALL_3(ctx, mem_ranges[i].start, mem_ranges[i].size,
+                 mem_ranges[i].prot, mprotect);
    }
 
-   // ^
-   // ^
-
    /* decrypt heap */
-   __push((uintptr_t)xor_enc_fn);
-   __push((uintptr_t)0);
-   __push((uintptr_t)0);
-   __push((uintptr_t)xor_key);
-   __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
-   __push((uintptr_t)heap_range.size);
-   __push((uintptr_t)ctx->pop_rsi);
-   __push((uintptr_t)heap_range.start);
-   __push((uintptr_t)ctx->pop_rdi);
-
-   // ^
-   // ^
+   ROP_CALL_3(ctx, heap_range.start, heap_range.size, xor_key, xor_enc_fn);
 
    /* decrypt regions */
    for (int i = 0; i < num_ranges; i++) {
-      __push((uintptr_t)xor_enc_fn);
-      __push((uintptr_t)0);
-      __push((uintptr_t)0);
-      __push((uintptr_t)xor_key);
-      __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
-      __push((uintptr_t)mem_ranges[i].size);
-      __push((uintptr_t)ctx->pop_rsi);
-      __push((uintptr_t)mem_ranges[i].start);
-      __push((uintptr_t)ctx->pop_rdi);
+      ROP_CALL_3(ctx, mem_ranges[i].start, mem_ranges[i].size, xor_key,
+                 xor_enc_fn);
    }
 
-   // ^
-   // ^
-
    /* nanosleep */
-   __push((uintptr_t)nanosleep);            // nanosleep addr
-   __push((uintptr_t)NULL);                 // rem = NULL
-   __push((uintptr_t)ctx->pop_rsi);
-   __push((uintptr_t)timespec_addr);        // timespec heap addr
-   __push((uintptr_t)ctx->pop_rdi);
-
-   // ^
-   // ^
+   ROP_CALL_2(ctx, timespec_addr, NULL, nanosleep);
 
    /* encrypt regions */
    for (int i = 0; i < num_ranges; i++) {
-      __push((uintptr_t)xor_enc_fn);
-      __push((uintptr_t)0);
-      __push((uintptr_t)0);
-      __push((uintptr_t)xor_key);
-      __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
-      __push((uintptr_t)mem_ranges[i].size);
-      __push((uintptr_t)ctx->pop_rsi);
-      __push((uintptr_t)mem_ranges[i].start);
-      __push((uintptr_t)ctx->pop_rdi);
+      ROP_CALL_3(ctx, mem_ranges[i].start, mem_ranges[i].size, xor_key,
+                 xor_enc_fn);
    }
-
-   // ^
-   // ^
 
    /* encrypt heap */
-   __push((uintptr_t)xor_enc_fn);
-   __push((uintptr_t)0);
-   __push((uintptr_t)0);
-   __push((uintptr_t)xor_key);
-   __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
-   __push((uintptr_t)heap_range.size);
-   __push((uintptr_t)ctx->pop_rsi);
-   __push((uintptr_t)heap_range.start);
-   __push((uintptr_t)ctx->pop_rdi);
+   ROP_CALL_3(ctx, heap_range.start, heap_range.size, xor_key, xor_enc_fn);
 
-   // ^
-   // ^
-
-   /* mprotect regions to rw if necessary */
+   /* mprotect regions to rw */
    for (int i = 0; i < num_ranges; i++) {
-      __push((uintptr_t)mprotect);
-      __push((uintptr_t)0);
-      __push((uintptr_t)0);
-      __push((uintptr_t)(PROT_READ | PROT_WRITE));
-      __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
-      __push((uintptr_t)mem_ranges[i].size);
-      __push((uintptr_t)ctx->pop_rsi);
-      __push((uintptr_t)mem_ranges[i].start);
-      __push((uintptr_t)ctx->pop_rdi);
+      ROP_CALL_3(ctx, mem_ranges[i].start, mem_ranges[i].size,
+                 (PROT_READ | PROT_WRITE), mprotect);
    }
-
-   // ^
-   // ^
 
    /* start rop chain - execution continues at [ps_chain_ret] */
    __ret();
