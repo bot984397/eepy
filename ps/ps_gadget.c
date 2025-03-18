@@ -182,6 +182,7 @@ int ps_gadget_scan(uintptr_t libc_base, uintptr_t libc_size,
 
    gadget_ctx->pop_rsi = (uintptr_t)pop_rsi;
    gadget_ctx->pop_rdi = (uintptr_t)pop_rdi;
+   gadget_ctx->pop_rdx_rcx_rbx = (uintptr_t)pop_rdx_rcx_rbx;
 
    return 1;
 }
@@ -216,17 +217,21 @@ struct ps_mem_range *ps_gadget_get_ranges(int prot_all, void *image_base,
          continue;
       }
 
+      /*
       uintptr_t start = (uintptr_t)image_base 
                       + (seg->p_vaddr & ~(getpagesize() - 1));
       size_t size = (seg->p_memsz + getpagesize() - 1) & ~(getpagesize() - 1);
-      int exec = seg->p_flags & PF_X;
-      int ro = !(seg->p_flags & PF_W);
+      */
+
+      int prot = 0;
+      if (seg->p_flags & PF_R) prot |= PROT_READ;
+      if (seg->p_flags & PF_W) prot |= PROT_WRITE;
+      if (seg->p_flags & PF_X) prot |= PROT_EXEC;
 
       ranges[j].start = image_base + (seg->p_vaddr & ~(getpagesize() - 1));
       ranges[j].size = (seg->p_memsz + getpagesize() - 1) 
                      & ~(getpagesize() - 1);
-      ranges[j].exec = exec;
-      ranges[j].ro = ro;
+      ranges[j].prot = prot;
       j++;
    }
    *num_ranges = num_seg;
@@ -256,7 +261,20 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
 
    /* mprotect regions back to original protection */
    for (int i = 0; i < num_ranges; i++) {
-      
+      /* only target regions that were changed in step 1 */
+      if ((mem_ranges[i].prot & (PROT_READ | PROT_WRITE)) != 
+         (PROT_READ | PROT_WRITE)) {
+         __push((uintptr_t)mprotect);
+         __push((uintptr_t)0);
+         __push((uintptr_t)0);
+         __push((uintptr_t)mem_ranges[i].prot);
+         __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
+         __push((uintptr_t)mem_ranges[i].size);
+         __push((uintptr_t)ctx->pop_rsi);
+         __push((uintptr_t)mem_ranges[i].start);
+         __push((uintptr_t)ctx->pop_rdi);
+      }
+ 
    }
 
    // ^
@@ -290,7 +308,18 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
 
    /* mprotect regions to rw if necessary */
    for (int i = 0; i < num_ranges; i++) {
-
+      if ((mem_ranges[i].prot & (PROT_READ | PROT_WRITE)) != 
+         (PROT_READ | PROT_WRITE)) {
+         __push((uintptr_t)mprotect);
+         __push((uintptr_t)0);
+         __push((uintptr_t)0);
+         __push((uintptr_t)(PROT_READ | PROT_WRITE));
+         __push((uintptr_t)ctx->pop_rdx_rcx_rbx);
+         __push((uintptr_t)mem_ranges[i].size);
+         __push((uintptr_t)ctx->pop_rsi);
+         __push((uintptr_t)mem_ranges[i].start);
+         __push((uintptr_t)ctx->pop_rdi);
+      }
    }
 
    // ^

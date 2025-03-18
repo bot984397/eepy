@@ -11,13 +11,13 @@ struct ps_gadget_ctx {
    uintptr_t pop_rsi;
    uintptr_t pop_rdx;
    uintptr_t pop_rax;
+   uintptr_t pop_rdx_rcx_rbx;
 };
 
 struct ps_mem_range {
    void *start;            // base addr
    uintptr_t size;         // size in bytes
-   int exec;               // executable?
-   int ro;                 // read-only?
+   int prot;
 };
 
 int ps_gadget_init(uintptr_t *libc_base, uintptr_t *libc_size);

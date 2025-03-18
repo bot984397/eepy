@@ -17,6 +17,6 @@ int main(void) {
 
    while (1) {
       subroutine();                                            // do work
-      ps_gadget_build_chain(&ctx, 0, ps_get_base_addr(), 2);   // sleep
+      ps_gadget_build_chain(&ctx, 0, ps_get_base_addr(), 5);   // sleep
    }
 }
