@@ -11,6 +11,8 @@
 #include <elf.h>
 #include <time.h>
 #include <sys/mman.h>
+#include <openssl/rc4.h>
+#include <openssl/rand.h>
 #include <ps/ps_gadget.h>
 
 #if __SIZEOF_POINTER__ == 8
@@ -30,6 +32,17 @@
    __push((uintptr_t)fn_ptr); \
    __push((uintptr_t)0); \
    __push((uintptr_t)0); \
+   __push((uintptr_t)val3); \
+   __push((uintptr_t)_rop_ctx->pop_rdx_rcx_rbx); \
+   __push((uintptr_t)val2); \
+   __push((uintptr_t)_rop_ctx->pop_rsi); \
+   __push((uintptr_t)val1); \
+   __push((uintptr_t)_rop_ctx->pop_rdi)
+
+#define ROP_CALL_4(_rop_ctx, val1, val2, val3, val4, fn_ptr) \
+   __push((uintptr_t)fn_ptr); \
+   __push((uintptr_t)0); \
+   __push((uintptr_t)val4); \
    __push((uintptr_t)val3); \
    __push((uintptr_t)_rop_ctx->pop_rdx_rcx_rbx); \
    __push((uintptr_t)val2); \
@@ -268,32 +281,13 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
    struct ps_mem_range heap_range = {0};
    ps_get_heap_range(&heap_range);
 
-   unsigned char xor_func[] = {
-      0x48, 0x85, 0xf6, 0x74, 0x11, 0x48, 0x89, 0xf8,
-      0x48, 0x89, 0xf1, 0x41, 0x88, 0xd0, 0x44, 0x30, 0x00, 0x48, 0xff, 0xc0,
-      0xe2, 0xf8, 0xc3
-   };
+   RC4_KEY rc4_key;
+   unsigned char key_bytes[16];
+   RAND_bytes(key_bytes, 16);
 
-   size_t func_size = sizeof(xor_func);
-   size_t timespec_offset = (func_size + 0xF) & ~0xF; 
-   size_t mmap_size = timespec_offset + sizeof(struct timespec);
-
-   void *mmap_segment = mmap(NULL, mmap_size,
-                             PROT_READ | PROT_WRITE | PROT_EXEC,
-                             MAP_ANON | MAP_PRIVATE, -1, 0);
-   memcpy(mmap_segment, xor_func, func_size);
-
-   struct timespec *timespec_addr = 
-      (struct timespec *)((char *)mmap_segment + timespec_offset);
-   timespec_addr->tv_sec = duration;
-   timespec_addr->tv_nsec = 0;
-
-   void (*xor_enc_fn)(uint8_t*, size_t, uint8_t) = 
-      (void (*)(uint8_t*, size_t, uint8_t))mmap_segment;
-
-   /* randomized xor key */
-   srand(time(NULL));
-   int xor_key = rand() % 256;
+   struct timespec timespec_t;
+   timespec_t.tv_sec = duration;
+   timespec_t.tv_nsec = 0;
 
    void *ret_addr = &&ps_chain_ret;
    __push((uintptr_t)ret_addr);         // final return address
@@ -305,25 +299,39 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
    }
 
    /* decrypt heap */
-   ROP_CALL_3(ctx, heap_range.start, heap_range.size, xor_key, xor_enc_fn);
+   ROP_CALL_4(ctx, &rc4_key, heap_range.size, heap_range.start,
+              heap_range.start, RC4);
+
+   /* set up arc4 key */
+   ROP_CALL_3(ctx, &rc4_key, 16, key_bytes, RC4_set_key);
 
    /* decrypt regions */
    for (int i = 0; i < num_ranges; i++) {
-      ROP_CALL_3(ctx, mem_ranges[i].start, mem_ranges[i].size, xor_key,
-                 xor_enc_fn);
+      ROP_CALL_4(ctx, &rc4_key, mem_ranges[i].size, mem_ranges[i].start,
+                 mem_ranges[i].start, RC4); 
    }
 
+   /* set up arc4 key */
+   ROP_CALL_3(ctx, &rc4_key, 16, key_bytes, RC4_set_key);
+
    /* nanosleep */
-   ROP_CALL_2(ctx, timespec_addr, NULL, nanosleep);
+   ROP_CALL_2(ctx, &timespec_t, NULL, nanosleep);
 
    /* encrypt regions */
    for (int i = 0; i < num_ranges; i++) {
-      ROP_CALL_3(ctx, mem_ranges[i].start, mem_ranges[i].size, xor_key,
-                 xor_enc_fn);
-   }
+      ROP_CALL_4(ctx, &rc4_key, mem_ranges[i].size, mem_ranges[i].start,
+                 mem_ranges[i].start, RC4);
+   } 
+
+   /* set up arc4 key */
+   ROP_CALL_3(ctx, &rc4_key, 16, key_bytes, RC4_set_key);
 
    /* encrypt heap */
-   ROP_CALL_3(ctx, heap_range.start, heap_range.size, xor_key, xor_enc_fn);
+   ROP_CALL_4(ctx, &rc4_key, heap_range.size, heap_range.start,
+              heap_range.start, RC4);
+
+   /* set up arc4 key */
+   ROP_CALL_3(ctx, &rc4_key, 16, key_bytes, RC4_set_key);
 
    /* mprotect regions to rw */
    for (int i = 0; i < num_ranges; i++) {
@@ -335,6 +343,5 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
    __ret();
 
 ps_chain_ret:
-   munmap(mmap_segment, sizeof(xor_func));
    return;
 }
