@@ -187,6 +187,10 @@ static int eepy_get_base(struct eepy_ctx *ctx) {
    return(1);
 }
 
+/* @brief   initializes an eepy context
+ * @param   ctx - eepy context
+ * @retval  1 on success, 0 otherwise
+ */
 int eepy_init(struct eepy_ctx *ctx) {
    uintptr libc_base, libc_size;
    if (!eepy_get_libc(&libc_base, &libc_size)) {
@@ -271,6 +275,11 @@ static void eepy_get_heap_range(struct mem_range_t *heap_range) {
    heap_range->size = l_size;
 }
 
+/* @brief   sets up and executes the rop chain
+ * @param   ctx   - eepy context
+ * @param   sleep - sleep time in seconds
+ * @retval  none
+ */
 void bedtime(struct eepy_ctx *ctx, u32 sleep) {
    if (!ctx || !sleep) {
       return;

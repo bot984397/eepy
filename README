@@ -1,1 +1,6 @@
 eepy - sleep obfuscation via rop
+
+[features]
+   randomized RC4 key on each iteration
+   PT_LOAD encryption
+   full heap encryption
