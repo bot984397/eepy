@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <unistd.h>
-#include <ps/ps_core.h>
-#include <ps/ps_gadget.h>
+#include <eepy/eepy.h>
 
 static void subroutine(void) {
    printf("subroutine called\n");
@@ -10,13 +9,14 @@ static void subroutine(void) {
 int main(void) {
    printf("pid: %d\n", getpid());
 
-   struct ps_gadget_ctx ctx = {0};
-   uintptr_t libc_base, libc_size;
-   ps_gadget_init(&libc_base, &libc_size);
-   ps_gadget_scan(libc_base, libc_size, &ctx);
+   struct eepy_ctx ctx = {0};
+   if (!eepy_init(&ctx)) {
+      printf("failed to initialize eepy\n");
+      return(0);
+   }
 
    while (1) {
-      subroutine();                                            // do work
-      ps_gadget_build_chain(&ctx, 0, ps_get_base_addr(), 5);   // sleep
+      subroutine();           // do work
+      bedtime(&ctx, 5);       // sleep
    }
 }

@@ -1,20 +1,19 @@
-/* @file    ps_gadget.c
- * @author  vmx
- * @brief   libc gadget enumeration implementation
+/* @file    eepy.c
+ * @author  <vmx@0x6e63.com>
+ * @brief   eepy sleep obfuscator
  */
 
-#include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
-#include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <elf.h>
-#include <time.h>
 #include <sys/mman.h>
+#include <sys/auxv.h>
+#include <eepy/eepy.h>
 #include <openssl/rc4.h>
 #include <openssl/rand.h>
-#include <ps/ps_gadget.h>
 
+/* <elf.h> doesn't have this for some reason? */
 #if __SIZEOF_POINTER__ == 8
 #define ElfW(type) Elf64_##type
 #else
@@ -22,40 +21,40 @@
 #endif
 
 #define ROP_CALL_2(_rop_ctx, val1, val2, fn_ptr) \
-   __push((uintptr_t)fn_ptr); \
-   __push((uintptr_t)val2); \
-   __push((uintptr_t)_rop_ctx->pop_rsi); \
-   __push((uintptr_t)val1); \
-   __push((uintptr_t)_rop_ctx->pop_rdi)
+   __push((uintptr)fn_ptr); \
+   __push((uintptr)val2); \
+   __push((uintptr)_rop_ctx->pop_rsi); \
+   __push((uintptr)val1); \
+   __push((uintptr)_rop_ctx->pop_rdi)
 
 #define ROP_CALL_3(_rop_ctx, val1, val2, val3, fn_ptr) \
-   __push((uintptr_t)fn_ptr); \
-   __push((uintptr_t)0); \
-   __push((uintptr_t)0); \
-   __push((uintptr_t)val3); \
-   __push((uintptr_t)_rop_ctx->pop_rdx_rcx_rbx); \
-   __push((uintptr_t)val2); \
-   __push((uintptr_t)_rop_ctx->pop_rsi); \
-   __push((uintptr_t)val1); \
-   __push((uintptr_t)_rop_ctx->pop_rdi)
+   __push((uintptr)fn_ptr); \
+   __push((uintptr)0); \
+   __push((uintptr)0); \
+   __push((uintptr)val3); \
+   __push((uintptr)_rop_ctx->pop_rdx_rcx_rbx); \
+   __push((uintptr)val2); \
+   __push((uintptr)_rop_ctx->pop_rsi); \
+   __push((uintptr)val1); \
+   __push((uintptr)_rop_ctx->pop_rdi)
 
 #define ROP_CALL_4(_rop_ctx, val1, val2, val3, val4, fn_ptr) \
-   __push((uintptr_t)fn_ptr); \
-   __push((uintptr_t)0); \
-   __push((uintptr_t)val4); \
-   __push((uintptr_t)val3); \
-   __push((uintptr_t)_rop_ctx->pop_rdx_rcx_rbx); \
-   __push((uintptr_t)val2); \
-   __push((uintptr_t)_rop_ctx->pop_rsi); \
-   __push((uintptr_t)val1); \
-   __push((uintptr_t)_rop_ctx->pop_rdi)
+   __push((uintptr)fn_ptr); \
+   __push((uintptr)0); \
+   __push((uintptr)val4); \
+   __push((uintptr)val3); \
+   __push((uintptr)_rop_ctx->pop_rdx_rcx_rbx); \
+   __push((uintptr)val2); \
+   __push((uintptr)_rop_ctx->pop_rsi); \
+   __push((uintptr)val1); \
+   __push((uintptr)_rop_ctx->pop_rdi)
 
 /* @brief   pushes a value onto the stack
  * @param   val: value to push
  * @retval  none
  * @note    this routine needs to be inlined at all times
  */
-static inline __attribute__((always_inline)) void __push(uintptr_t val) {
+static inline __attribute__((always_inline)) void __push(uintptr val) {
    __asm__ volatile(
       "push %0\n"
       :
@@ -73,29 +72,28 @@ static inline __attribute__((always_inline)) void __ret(void) {
    );
 }
 
-/* @brief   gets libc executable section base addr + size
- * @param   libc_base: libc base address on success, otherwise undefined
- * @param   libc_size: libc size on success, otherwise undefined
- * @retval  1 on success, 0 otherwise
- */
-int ps_gadget_init(uintptr_t *libc_base, uintptr_t *libc_size) {
-   if (!libc_base || !libc_size) {
-      return 0;
-   }
+struct mem_range_t {
+   void *start;            // base addr
+   uintptr size;         // size in bytes
+   int prot;
+};
 
+static int eepy_get_libc(uintptr *base, uintptr *size) {
+   if (!base | !size) {
+      return(0);
+   }
    FILE *maps = fopen("/proc/self/maps", "r");
    if (!maps) {
       perror("fopen");
-      return 0;
+      return(0);
    }
-
-   uintptr_t l_start = 0;
-   uintptr_t l_size = 0;
+   uintptr l_start = 0;
+   uintptr l_size = 0;
 
    char line[256];
    while (fgets(line, sizeof(line), maps)) {
       if (strstr(line, "libc") && strstr(line, "/lib")) {
-         uintptr_t start, end;
+         uintptr start, end;
          char perms[5];
          if (sscanf(line, "%lx-%lx %4s", &start, &end, perms) == 3) {
             if (strcmp(perms, "r-xp") == 0) {
@@ -109,33 +107,18 @@ int ps_gadget_init(uintptr_t *libc_base, uintptr_t *libc_size) {
 
    fclose(maps);
    if (!l_start || !l_size) {
-      return 0;
+      return(0);
    }
-   *libc_base = l_start;
-   *libc_size = l_size;
-   return 1;
+   *base = l_start;
+   *size = l_size;
+   return(1);
 }
 
-/* @brief   scans libc for rop gadgets
- * @param   libc_base: libc executable region base address
- * @param   libc_size: libc executable region size
- * @param   gadget_ctx: rop gadget context populated on success
- * @retval  1 on success, 0 otherwise
- */
-int ps_gadget_scan(uintptr_t libc_base, uintptr_t libc_size,
-                   struct ps_gadget_ctx *gadget_ctx) {
-   printf("scanning for gadgets [libc base: %lx]\n", libc_base);
-   if (!libc_base || !libc_size || !gadget_ctx) {
-      return 0;
+static int eepy_get_gadgets(struct eepy_ctx *ctx, uintptr libc_base, 
+                            uintptr libc_size) {
+   if (!ctx || !libc_base || !libc_size) {
+      return(0);
    }
-
-   /* rop chain structure
-    * [1] mprotect executable region to rw
-    * [2] encrypt regions (only exec / all depending on cfg)
-    * [3] sleep for specified duration
-    * [4] decrypt regions (only exec / all depending on cfg)
-    * [5] mprotect executable region to rx
-    */
 
    void *pop_rdi = NULL;
    void *pop_rsi = NULL;
@@ -145,7 +128,7 @@ int ps_gadget_scan(uintptr_t libc_base, uintptr_t libc_size,
    void *jmp_rax = NULL;
 
    unsigned char *start = (unsigned char*)libc_base;
-   for (size_t i = 0; i < libc_size; i++) {
+   for (uintptr i = 0; i < libc_size; i++) {
       if (start[i] == 0xC3) {
          /* pop rdx; pop rcx; pop rbx; ret */
          if (i >= 3 && pop_rdx_rcx_rbx == NULL &&
@@ -186,31 +169,51 @@ int ps_gadget_scan(uintptr_t libc_base, uintptr_t libc_size,
 
    if (!pop_rdi || !pop_rsi || !pop_rdx_rcx_rbx || !pop_rax || !syscall ||
        !jmp_rax) {
-      printf("one or more gadgets are missing\n");
-      return 0;
+      return(0);
    }
-
-   gadget_ctx->pop_rsi = (uintptr_t)pop_rsi;
-   gadget_ctx->pop_rdi = (uintptr_t)pop_rdi;
-   gadget_ctx->pop_rdx_rcx_rbx = (uintptr_t)pop_rdx_rcx_rbx;
-
-   return 1;
+   ctx->pop_rsi = (uintptr)pop_rsi;
+   ctx->pop_rdi = (uintptr)pop_rdi;
+   ctx->pop_rdx_rcx_rbx = (uintptr)pop_rdx_rcx_rbx;
+   return(1);
 }
 
-struct ps_mem_range *ps_gadget_get_ranges(int prot_all, void *image_base,
-                                          int *num_ranges) {
-   ElfW(Ehdr) *ehdr = (ElfW(Ehdr)*)image_base;
+static int eepy_get_base(struct eepy_ctx *ctx) {
+   ElfW(Phdr) *phdr = (ElfW(Phdr) *)getauxval(AT_PHDR);
+   if (!phdr) {
+      return(0);
+   }
+   ElfW(Ehdr) *ehdr = (ElfW(Ehdr) *)((uintptr)phdr - phdr->p_offset);
+   ctx->prog_base = (void*)ehdr;
+   return(1);
+}
+
+int eepy_init(struct eepy_ctx *ctx) {
+   uintptr libc_base, libc_size;
+   if (!eepy_get_libc(&libc_base, &libc_size)) {
+      return(0);
+   }
+   if (!eepy_get_gadgets(ctx, libc_base, libc_size)) {
+      return(0);
+   }
+   if (!eepy_get_base(ctx)) {
+      return(0);   
+   }
+   return(1);
+}
+
+static struct mem_range_t *eepy_get_ranges(void *img_base, int *num_ranges) {
+   ElfW(Ehdr) *ehdr = (ElfW(Ehdr)*)img_base;
    if (ehdr->e_ident[EI_MAG0] != ELFMAG0 ||
        ehdr->e_ident[EI_MAG1] != ELFMAG1 ||
        ehdr->e_ident[EI_MAG2] != ELFMAG2 ||
        ehdr->e_ident[EI_MAG3] != ELFMAG3) {
       printf("ps_gadget_get_ranges: invalid elf header\n");
-      return NULL;
+      return(NULL);
    }
 
    int num_seg = 0, j = 0;
-   struct ps_mem_range *ranges;
-   ElfW(Phdr) *phdr = (ElfW(Phdr)*)((char*)image_base + ehdr->e_phoff);
+   struct mem_range_t *ranges;
+   ElfW(Phdr) *phdr = (ElfW(Phdr)*)((char*)img_base + ehdr->e_phoff);
 
    for (int i = 0; i < ehdr->e_phnum; i++) {
       ElfW(Phdr) *seg = &phdr[i];
@@ -219,7 +222,7 @@ struct ps_mem_range *ps_gadget_get_ranges(int prot_all, void *image_base,
       }
       num_seg++;
    }
-   ranges = malloc(sizeof(struct ps_mem_range) * num_seg);
+   ranges = malloc(sizeof(struct mem_range_t) * num_seg);
 
    for (int i = 0; i < ehdr->e_phnum; i++) {
       ElfW(Phdr) *seg = &phdr[i];
@@ -232,28 +235,28 @@ struct ps_mem_range *ps_gadget_get_ranges(int prot_all, void *image_base,
       if (seg->p_flags & PF_W) prot |= PROT_WRITE;
       if (seg->p_flags & PF_X) prot |= PROT_EXEC;
 
-      ranges[j].start = image_base + (seg->p_vaddr & ~(getpagesize() - 1));
+      ranges[j].start = img_base + (seg->p_vaddr & ~(getpagesize() - 1));
       ranges[j].size = (seg->p_memsz + getpagesize() - 1) 
                      & ~(getpagesize() - 1);
       ranges[j].prot = prot;
       j++;
    }
    *num_ranges = num_seg;
-   return ranges;
+   return(ranges);
 }
 
-static void ps_get_heap_range(struct ps_mem_range *heap_range) {
+static void eepy_get_heap_range(struct mem_range_t *heap_range) {
    if (!heap_range) {
       return;
    }
 
    FILE *maps = fopen("/proc/self/maps", "r");
-   uintptr_t l_start = 0, l_size = 0;
+   uintptr l_start = 0, l_size = 0;
    char line[256];
 
    while (fgets(line, sizeof(line), maps)) {
       if (strstr(line, "[heap]")) {
-         uintptr_t start, end;
+         uintptr start, end;
          if (sscanf(line, "%lx-%lx", &start, &end) == 2) {
             l_start = start;
             l_size = end - start;
@@ -268,29 +271,27 @@ static void ps_get_heap_range(struct ps_mem_range *heap_range) {
    heap_range->size = l_size;
 }
 
-void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
-                           void *image_base, uint32_t duration) {
-   if (!ctx) {
-      printf("ps_gadget_build_chain: ctx is NULL\n");
+void bedtime(struct eepy_ctx *ctx, u32 sleep) {
+   if (!ctx || !sleep) {
+      return;
    }
 
    int num_ranges = 0;
-   struct ps_mem_range *mem_ranges = ps_gadget_get_ranges(prot_all, 
-                                                          image_base,
-                                                          &num_ranges);
-   struct ps_mem_range heap_range = {0};
-   ps_get_heap_range(&heap_range);
+   struct mem_range_t *mem_ranges = eepy_get_ranges(ctx->prog_base,
+                                                     &num_ranges);
+   struct mem_range_t heap_range = {0};
+   eepy_get_heap_range(&heap_range);
 
    RC4_KEY rc4_key;
    unsigned char key_bytes[16];
    RAND_bytes(key_bytes, 16);
 
    struct timespec timespec_t;
-   timespec_t.tv_sec = duration;
+   timespec_t.tv_sec = sleep;
    timespec_t.tv_nsec = 0;
 
    void *ret_addr = &&ps_chain_ret;
-   __push((uintptr_t)ret_addr);         // final return address
+   __push((uintptr)ret_addr);         // final return address
 
    /* mprotect regions back to original protection */
    for (int i = 0; i < num_ranges; i++) {
@@ -339,6 +340,7 @@ void ps_gadget_build_chain(struct ps_gadget_ctx *ctx, int prot_all,
                  (PROT_READ | PROT_WRITE), mprotect);
    }
 
+   free(mem_ranges);
    /* start rop chain - execution continues at [ps_chain_ret] */
    __ret();
 

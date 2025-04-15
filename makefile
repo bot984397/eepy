@@ -1,8 +1,8 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -Wno-deprecated-declarations -Wno-unused-parameter
-CFLAGS += -I. -I./ps
+CFLAGS += -I. -I./eepy
 LDFLAGS = -lssl -lcrypto
-SRC = main.c ps/ps_core.c ps/ps_gadget.c
+SRC = main.c eepy/eepy.c
 OBJ = $(SRC:.c=.o)
 EXEC = demo
 
